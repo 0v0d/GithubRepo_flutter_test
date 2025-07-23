@@ -1,4 +1,4 @@
-# Flutter GitHub Repository Search チュートリアル
+# Flutter GitHub Repository Search チュートリアル (ViewModel版)
 
 ## 目次
 1. [プロジェクトのセットアップ](#1-プロジェクトのセットアップ)
@@ -6,12 +6,13 @@
 3. [プロジェクト構造](#3-プロジェクト構造)
 4. [モデルクラスの作成（Freezed）](#4-モデルクラスの作成freezed)
 5. [ネットワーキング（Dio + Retrofit）](#5-ネットワーキングdio--retrofit)
-6. [ローカルデータソース（SQLite + SharedPreferences）](#6-ローカルデータソースsqlite--sharedpreferences)
+6. [ローカルデータソース（SharedPreferences）](#6-ローカルデータソースsharedpreferences)
 7. [リポジトリパターンの実装](#7-リポジトリパターンの実装)
-8. [ナビゲーション（Auto Route）](#8-ナビゲーションauto-route)
-9. [UI実装](#9-ui実装)
-10. [StateManagementの実装](#10-statemanagementの実装)
-11. [メイン機能の統合](#11-メイン機能の統合)
+8. [ViewModelの実装](#8-viewmodelの実装)
+9. [ナビゲーション（Auto Route）](#9-ナビゲーションauto-route)
+10. [UI実装](#10-ui実装)
+11. [StateManagementの実装](#11-statemanagementの実装)
+12. [メイン機能の統合](#12-メイン機能の統合)
 
 ## 1. プロジェクトのセットアップ
 
@@ -35,9 +36,7 @@ dependencies:
   pretty_dio_logger: ^1.3.1
   
   # Local Storage
-  sqflite: ^2.3.0
   shared_preferences: ^2.2.2
-  path: ^1.8.3
   
   # Model & Code Generation
   freezed_annotation: ^2.4.1
@@ -85,7 +84,6 @@ lib/
 ├── data/
 │   ├── datasources/
 │   │   ├── local/
-│   │   │   ├── database_helper.dart
 │   │   │   └── preferences_helper.dart
 │   │   └── remote/
 │   │       └── github_api_service.dart
@@ -103,7 +101,7 @@ lib/
 │   │   └── github_repository.dart
 │   └── usecases/
 │       ├── search_repositories.dart
-│       └── get_favorite_repositories.dart
+│       └── get_search_history.dart
 ├── presentation/
 │   ├── pages/
 │   │   ├── search/
@@ -113,10 +111,11 @@ lib/
 │   │   │       └── search_bar.dart
 │   │   ├── detail/
 │   │   │   └── repository_detail_page.dart
-│   │   ├── favorites/
-│   │   │   └── favorites_page.dart
 │   │   └── webview/
 │   │       └── webview_page.dart
+│   ├── viewmodels/
+│   │   ├── search_viewmodel.dart
+│   │   └── repository_detail_viewmodel.dart
 │   ├── providers/
 │   │   └── github_providers.dart
 │   └── routes/
@@ -234,103 +233,7 @@ abstract class GithubApiService {
 }
 ```
 
-## 6. ローカルデータソース（SQLite + SharedPreferences）
-
-### `lib/data/datasources/local/database_helper.dart`
-
-```dart
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
-import 'dart:convert';
-import '../../models/repository_model.dart';
-
-class DatabaseHelper {
-  static const _databaseName = "github_repos.db";
-  static const _databaseVersion = 1;
-  static const table = 'favorites';
-  
-  static const columnId = 'id';
-  static const columnData = 'data';
-  static const columnTimestamp = 'timestamp';
-
-  DatabaseHelper._privateConstructor();
-  static final DatabaseHelper instance = DatabaseHelper._privateConstructor();
-
-  static Database? _database;
-  
-  Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
-  }
-  
-  Future<Database> _initDatabase() async {
-    String path = join(await getDatabasesPath(), _databaseName);
-    return await openDatabase(
-      path,
-      version: _databaseVersion,
-      onCreate: _onCreate,
-    );
-  }
-  
-  Future<void> _onCreate(Database db, int version) async {
-    await db.execute('''
-      CREATE TABLE $table (
-        $columnId INTEGER PRIMARY KEY,
-        $columnData TEXT NOT NULL,
-        $columnTimestamp INTEGER NOT NULL
-      )
-    ''');
-  }
-  
-  Future<int> insertFavorite(RepositoryModel repository) async {
-    Database db = await database;
-    Map<String, dynamic> row = {
-      columnId: repository.id,
-      columnData: jsonEncode(repository.toJson()),
-      columnTimestamp: DateTime.now().millisecondsSinceEpoch,
-    };
-    return await db.insert(
-      table,
-      row,
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-  
-  Future<List<RepositoryModel>> getFavorites() async {
-    Database db = await database;
-    List<Map<String, dynamic>> maps = await db.query(
-      table,
-      orderBy: '$columnTimestamp DESC',
-    );
-    
-    return List.generate(maps.length, (i) {
-      return RepositoryModel.fromJson(
-        jsonDecode(maps[i][columnData]) as Map<String, dynamic>,
-      );
-    });
-  }
-  
-  Future<int> deleteFavorite(int id) async {
-    Database db = await database;
-    return await db.delete(
-      table,
-      where: '$columnId = ?',
-      whereArgs: [id],
-    );
-  }
-  
-  Future<bool> isFavorite(int id) async {
-    Database db = await database;
-    List<Map<String, dynamic>> maps = await db.query(
-      table,
-      where: '$columnId = ?',
-      whereArgs: [id],
-    );
-    return maps.isNotEmpty;
-  }
-}
-```
+## 6. ローカルデータソース（SharedPreferences）
 
 ### `lib/data/datasources/local/preferences_helper.dart`
 
@@ -421,11 +324,6 @@ abstract class GithubRepository {
     required String sort,
   });
   
-  Future<List<RepositoryEntity>> getFavorites();
-  Future<void> addToFavorites(RepositoryEntity repository);
-  Future<void> removeFromFavorites(int id);
-  Future<bool> isFavorite(int id);
-  
   Future<List<String>> getSearchHistory();
   Future<void> addToSearchHistory(String query);
   Future<void> clearSearchHistory();
@@ -440,7 +338,6 @@ abstract class GithubRepository {
 ```dart
 import '../../domain/entities/repository_entity.dart';
 import '../../domain/repositories/github_repository.dart';
-import '../datasources/local/database_helper.dart';
 import '../datasources/local/preferences_helper.dart';
 import '../datasources/remote/github_api_service.dart';
 import '../models/repository_model.dart';
@@ -448,15 +345,12 @@ import '../../core/constants/api_constants.dart';
 
 class GithubRepositoryImpl implements GithubRepository {
   final GithubApiService _apiService;
-  final DatabaseHelper _databaseHelper;
   final PreferencesHelper _preferencesHelper;
   
   GithubRepositoryImpl({
     required GithubApiService apiService,
-    required DatabaseHelper databaseHelper,
     required PreferencesHelper preferencesHelper,
   })  : _apiService = apiService,
-        _databaseHelper = databaseHelper,
         _preferencesHelper = preferencesHelper;
   
   @override
@@ -477,28 +371,6 @@ class GithubRepositoryImpl implements GithubRepository {
     } catch (e) {
       throw Exception('Failed to search repositories: $e');
     }
-  }
-  
-  @override
-  Future<List<RepositoryEntity>> getFavorites() async {
-    final models = await _databaseHelper.getFavorites();
-    return models.map((model) => _mapModelToEntity(model)).toList();
-  }
-  
-  @override
-  Future<void> addToFavorites(RepositoryEntity repository) async {
-    final model = _mapEntityToModel(repository);
-    await _databaseHelper.insertFavorite(model);
-  }
-  
-  @override
-  Future<void> removeFromFavorites(int id) async {
-    await _databaseHelper.deleteFavorite(id);
-  }
-  
-  @override
-  Future<bool> isFavorite(int id) async {
-    return await _databaseHelper.isFavorite(id);
   }
   
   @override
@@ -542,33 +414,153 @@ class GithubRepositoryImpl implements GithubRepository {
       updatedAt: DateTime.parse(model.updatedAt),
     );
   }
+}
+```
+
+## 8. ViewModelの実装
+
+### `lib/presentation/viewmodels/search_viewmodel.dart`
+
+```dart
+import 'package:flutter/foundation.dart';
+import '../../domain/entities/repository_entity.dart';
+import '../../domain/repositories/github_repository.dart';
+
+class SearchViewModel extends ChangeNotifier {
+  final GithubRepository _repository;
   
-  RepositoryModel _mapEntityToModel(RepositoryEntity entity) {
-    return RepositoryModel(
-      id: entity.id,
-      name: entity.name,
-      fullName: entity.fullName,
-      owner: OwnerModel(
-        id: 0, // Dummy value
-        login: entity.ownerName,
-        avatarUrl: entity.ownerAvatarUrl,
-        htmlUrl: '', // Dummy value
-      ),
-      htmlUrl: entity.htmlUrl,
-      description: entity.description,
-      starsCount: entity.starsCount,
-      watchersCount: 0, // Dummy value
-      forksCount: entity.forksCount,
-      language: entity.language,
-      openIssuesCount: 0, // Dummy value
-      createdAt: entity.createdAt.toIso8601String(),
-      updatedAt: entity.updatedAt.toIso8601String(),
-    );
+  List<RepositoryEntity> _repositories = [];
+  bool _isLoading = false;
+  bool _isLoadingMore = false;
+  String? _error;
+  String _currentQuery = '';
+  int _currentPage = 1;
+  String _sortOption = 'stars';
+  List<String> _searchHistory = [];
+  
+  SearchViewModel(this._repository) {
+    _init();
+  }
+  
+  // Getters
+  List<RepositoryEntity> get repositories => _repositories;
+  bool get isLoading => _isLoading;
+  bool get isLoadingMore => _isLoadingMore;
+  String? get error => _error;
+  String get currentQuery => _currentQuery;
+  String get sortOption => _sortOption;
+  List<String> get searchHistory => _searchHistory;
+  
+  Future<void> _init() async {
+    _searchHistory = await _repository.getSearchHistory();
+    _sortOption = await _repository.getSortOption();
+    notifyListeners();
+  }
+  
+  Future<void> search(String query) async {
+    if (query.isEmpty) return;
+    
+    _isLoading = true;
+    _error = null;
+    _currentQuery = query;
+    _currentPage = 1;
+    _repositories = [];
+    notifyListeners();
+    
+    try {
+      final results = await _repository.searchRepositories(
+        query: query,
+        page: 1,
+        sort: _sortOption,
+      );
+      
+      await _repository.addToSearchHistory(query);
+      _searchHistory = await _repository.getSearchHistory();
+      
+      _repositories = results;
+      _isLoading = false;
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+    }
+    
+    notifyListeners();
+  }
+  
+  Future<void> loadMore() async {
+    if (_isLoadingMore || _currentQuery.isEmpty) return;
+    
+    _isLoadingMore = true;
+    notifyListeners();
+    
+    try {
+      final nextPage = _currentPage + 1;
+      final results = await _repository.searchRepositories(
+        query: _currentQuery,
+        page: nextPage,
+        sort: _sortOption,
+      );
+      
+      _repositories = [..._repositories, ...results];
+      _currentPage = nextPage;
+      _isLoadingMore = false;
+    } catch (e) {
+      _error = e.toString();
+      _isLoadingMore = false;
+    }
+    
+    notifyListeners();
+  }
+  
+  Future<void> refresh() async {
+    if (_currentQuery.isEmpty) return;
+    await search(_currentQuery);
+  }
+  
+  Future<void> setSortOption(String option) async {
+    await _repository.setSortOption(option);
+    _sortOption = option;
+    notifyListeners();
+    
+    if (_currentQuery.isNotEmpty) {
+      await search(_currentQuery);
+    }
+  }
+  
+  Future<void> clearSearchHistory() async {
+    await _repository.clearSearchHistory();
+    _searchHistory = [];
+    notifyListeners();
   }
 }
 ```
 
-## 8. ナビゲーション（Auto Route）
+### `lib/presentation/viewmodels/repository_detail_viewmodel.dart`
+
+```dart
+import 'package:flutter/foundation.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../../domain/entities/repository_entity.dart';
+
+class RepositoryDetailViewModel extends ChangeNotifier {
+  final RepositoryEntity repository;
+  
+  RepositoryDetailViewModel({required this.repository});
+  
+  Future<void> openInExternalBrowser() async {
+    final url = Uri.parse(repository.htmlUrl);
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    }
+  }
+  
+  String formatDate(DateTime date) {
+    return '${date.year}年${date.month}月${date.day}日';
+  }
+}
+```
+
+## 9. ナビゲーション（Auto Route）
 
 ### `lib/presentation/routes/app_router.dart`
 
@@ -588,16 +580,13 @@ class AppRouter extends $AppRouter {
           page: RepositoryDetailRoute.page,
         ),
         AutoRoute(
-          page: FavoritesRoute.page,
-        ),
-        AutoRoute(
           page: WebViewRoute.page,
         ),
       ];
 }
 ```
 
-## 9. UI実装
+## 10. UI実装
 
 ### `lib/presentation/pages/search/search_page.dart`
 
@@ -638,27 +627,21 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   void _onScroll() {
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent * 0.8) {
-      ref.read(searchNotifierProvider.notifier).loadMore();
+      ref.read(searchViewModelProvider).loadMore();
     }
   }
   
   @override
   Widget build(BuildContext context) {
-    final searchState = ref.watch(searchNotifierProvider);
+    final viewModel = ref.watch(searchViewModelProvider);
     
     return Scaffold(
       appBar: AppBar(
         title: const Text('GitHub Repository Search'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.favorite),
-            onPressed: () {
-              context.router.push(const FavoritesRoute());
-            },
-          ),
           PopupMenuButton<String>(
             onSelected: (value) {
-              ref.read(searchNotifierProvider.notifier).setSortOption(value);
+              viewModel.setSortOption(value);
             },
             itemBuilder: (context) => [
               const PopupMenuItem(
@@ -682,31 +665,34 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           SearchBarWidget(
             controller: _searchController,
             onSearch: (query) {
-              ref.read(searchNotifierProvider.notifier).search(query);
+              viewModel.search(query);
             },
-            searchHistory: searchState.searchHistory,
+            searchHistory: viewModel.searchHistory,
             onHistoryTap: (query) {
               _searchController.text = query;
-              ref.read(searchNotifierProvider.notifier).search(query);
+              viewModel.search(query);
+            },
+            onClearHistory: () {
+              viewModel.clearSearchHistory();
             },
           ),
           Expanded(
-            child: searchState.isLoading && searchState.repositories.isEmpty
+            child: viewModel.isLoading && viewModel.repositories.isEmpty
                 ? const Center(child: CircularProgressIndicator())
-                : searchState.repositories.isEmpty
+                : viewModel.repositories.isEmpty
                     ? const Center(
                         child: Text('リポジトリを検索してください'),
                       )
                     : RefreshIndicator(
                         onRefresh: () async {
-                          ref.read(searchNotifierProvider.notifier).refresh();
+                          await viewModel.refresh();
                         },
                         child: ListView.builder(
                           controller: _scrollController,
-                          itemCount: searchState.repositories.length +
-                              (searchState.isLoadingMore ? 1 : 0),
+                          itemCount: viewModel.repositories.length +
+                              (viewModel.isLoadingMore ? 1 : 0),
                           itemBuilder: (context, index) {
-                            if (index == searchState.repositories.length) {
+                            if (index == viewModel.repositories.length) {
                               return const Center(
                                 child: Padding(
                                   padding: EdgeInsets.all(16.0),
@@ -715,7 +701,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                               );
                             }
                             
-                            final repository = searchState.repositories[index];
+                            final repository = viewModel.repositories[index];
                             return RepositoryCard(
                               repository: repository,
                               onTap: () {
@@ -739,7 +725,6 @@ class _SearchPageState extends ConsumerState<SearchPage> {
 
 ```dart
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import '../../../../domain/entities/repository_entity.dart';
 
 class RepositoryCard extends StatelessWidget {
@@ -892,380 +877,6 @@ class RepositoryCard extends StatelessWidget {
 }
 ```
 
-### `lib/presentation/pages/detail/repository_detail_page.dart`
-
-```dart
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:auto_route/auto_route.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:intl/intl.dart';
-import '../../../domain/entities/repository_entity.dart';
-import '../../providers/github_providers.dart';
-import '../../routes/app_router.gr.dart';
-
-@RoutePage()
-class RepositoryDetailPage extends ConsumerStatefulWidget {
-  final RepositoryEntity repository;
-  
-  const RepositoryDetailPage({
-    Key? key,
-    required this.repository,
-  }) : super(key: key);
-  
-  @override
-  ConsumerState<RepositoryDetailPage> createState() =>
-      _RepositoryDetailPageState();
-}
-
-class _RepositoryDetailPageState extends ConsumerState<RepositoryDetailPage> {
-  bool _isFavorite = false;
-  
-  @override
-  void initState() {
-    super.initState();
-    _checkFavoriteStatus();
-  }
-  
-  Future<void> _checkFavoriteStatus() async {
-    final isFavorite = await ref
-        .read(githubRepositoryProvider)
-        .isFavorite(widget.repository.id);
-    setState(() {
-      _isFavorite = isFavorite;
-    });
-  }
-  
-  Future<void> _toggleFavorite() async {
-    final repository = ref.read(githubRepositoryProvider);
-    if (_isFavorite) {
-      await repository.removeFromFavorites(widget.repository.id);
-    } else {
-      await repository.addToFavorites(widget.repository);
-    }
-    setState(() {
-      _isFavorite = !_isFavorite;
-    });
-  }
-  
-  @override
-  Widget build(BuildContext context) {
-    final dateFormat = DateFormat('yyyy年MM月dd日');
-    
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.repository.name),
-        actions: [
-          IconButton(
-            icon: Icon(
-              _isFavorite ? Icons.favorite : Icons.favorite_border,
-              color: _isFavorite ? Colors.red : null,
-            ),
-            onPressed: _toggleFavorite,
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Owner Info
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 40,
-                      backgroundImage: NetworkImage(widget.repository.ownerAvatarUrl),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            widget.repository.fullName,
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'by ${widget.repository.ownerName}',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            
-            // Description
-            if (widget.repository.description != null) ...[
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '説明',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(widget.repository.description!),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
-            
-            // Stats
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '統計情報',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 16),
-                    _buildStatRow(
-                      Icons.star,
-                      'Stars',
-                      widget.repository.starsCount.toString(),
-                    ),
-                    const Divider(),
-                    _buildStatRow(
-                      Icons.call_split,
-                      'Forks',
-                      widget.repository.forksCount.toString(),
-                    ),
-                    if (widget.repository.language != null) ...[
-                      const Divider(),
-                      _buildStatRow(
-                        Icons.code,
-                        '言語',
-                        widget.repository.language!,
-                      ),
-                    ],
-                    const Divider(),
-                    _buildStatRow(
-                      Icons.calendar_today,
-                      '作成日',
-                      dateFormat.format(widget.repository.createdAt),
-                    ),
-                    const Divider(),
-                    _buildStatRow(
-                      Icons.update,
-                      '更新日',
-                      dateFormat.format(widget.repository.updatedAt),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 24),
-            
-            // Action Buttons
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  context.router.push(
-                    WebViewRoute(
-                      url: widget.repository.htmlUrl,
-                      title: widget.repository.name,
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.open_in_browser),
-                label: const Text('ブラウザで開く'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () async {
-                  final url = Uri.parse(widget.repository.htmlUrl);
-                  if (await canLaunchUrl(url)) {
-                    await launchUrl(url, mode: LaunchMode.externalApplication);
-                  }
-                },
-                icon: const Icon(Icons.launch),
-                label: const Text('外部ブラウザで開く'),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-  
-  Widget _buildStatRow(IconData icon, String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          Icon(icon, size: 20),
-          const SizedBox(width: 16),
-          Text(label),
-          const Spacer(),
-          Text(
-            value,
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-        ],
-      ),
-    );
-  }
-}
-```
-
-### `lib/presentation/pages/webview/webview_page.dart`
-
-```dart
-import 'package:flutter/material.dart';
-import 'package:auto_route/auto_route.dart';
-import 'package:webview_flutter/webview_flutter.dart';
-
-@RoutePage()
-class WebViewPage extends StatefulWidget {
-  final String url;
-  final String title;
-  
-  const WebViewPage({
-    Key? key,
-    required this.url,
-    required this.title,
-  }) : super(key: key);
-  
-  @override
-  State<WebViewPage> createState() => _WebViewPageState();
-}
-
-class _WebViewPageState extends State<WebViewPage> {
-  late final WebViewController _controller;
-  bool _isLoading = true;
-  
-  @override
-  void initState() {
-    super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageStarted: (String url) {
-            setState(() {
-              _isLoading = true;
-            });
-          },
-          onPageFinished: (String url) {
-            setState(() {
-              _isLoading = false;
-            });
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse(widget.url));
-  }
-  
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              _controller.reload();
-            },
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          WebViewWidget(controller: _controller),
-          if (_isLoading)
-            const Center(
-              child: CircularProgressIndicator(),
-            ),
-        ],
-      ),
-    );
-  }
-}
-```
-
-### `lib/presentation/pages/favorites/favorites_page.dart`
-
-```dart
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:auto_route/auto_route.dart';
-import '../../providers/github_providers.dart';
-import '../../routes/app_router.gr.dart';
-import '../search/widgets/repository_card.dart';
-
-@RoutePage()
-class FavoritesPage extends ConsumerWidget {
-  const FavoritesPage({Key? key}) : super(key: key);
-  
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final favoritesAsync = ref.watch(favoritesProvider);
-    
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('お気に入り'),
-      ),
-      body: favoritesAsync.when(
-        data: (favorites) {
-          if (favorites.isEmpty) {
-            return const Center(
-              child: Text('お気に入りはまだありません'),
-            );
-          }
-          
-          return ListView.builder(
-            itemCount: favorites.length,
-            itemBuilder: (context, index) {
-              final repository = favorites[index];
-              return RepositoryCard(
-                repository: repository,
-                onTap: () {
-                  context.router.push(
-                    RepositoryDetailRoute(repository: repository),
-                  );
-                },
-              );
-            },
-          );
-        },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stack) => Center(
-          child: Text('エラーが発生しました: $error'),
-        ),
-      ),
-    );
-  }
-}
-```
-
 ### `lib/presentation/pages/search/widgets/search_bar.dart`
 
 ```dart
@@ -1276,6 +887,7 @@ class SearchBarWidget extends StatefulWidget {
   final Function(String) onSearch;
   final List<String> searchHistory;
   final Function(String) onHistoryTap;
+  final VoidCallback onClearHistory;
   
   const SearchBarWidget({
     Key? key,
@@ -1283,6 +895,7 @@ class SearchBarWidget extends StatefulWidget {
     required this.onSearch,
     required this.searchHistory,
     required this.onHistoryTap,
+    required this.onClearHistory,
   }) : super(key: key);
   
   @override
@@ -1343,324 +956,34 @@ class _SearchBarWidgetState extends State<SearchBarWidget> {
             constraints: const BoxConstraints(maxHeight: 200),
             child: Card(
               margin: const EdgeInsets.symmetric(horizontal: 16),
-              child: ListView.builder(
-                shrinkWrap: true,
-                itemCount: widget.searchHistory.length,
-                itemBuilder: (context, index) {
-                  final query = widget.searchHistory[index];
-                  return ListTile(
-                    leading: const Icon(Icons.history),
-                    title: Text(query),
-                    onTap: () {
-                      widget.onHistoryTap(query);
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: widget.searchHistory.length,
+                      itemBuilder: (context, index) {
+                        final query = widget.searchHistory[index];
+                        return ListTile(
+                          leading: const Icon(Icons.history),
+                          title: Text(query),
+                          onTap: () {
+                            widget.onHistoryTap(query);
+                            setState(() {
+                              _showHistory = false;
+                            });
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  TextButton(
+                    onPressed: () {
+                      widget.onClearHistory();
                       setState(() {
                         _showHistory = false;
                       });
                     },
-                  );
-                },
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-```
-
-## 10. StateManagementの実装
-
-### `lib/presentation/providers/github_providers.dart`
-
-```dart
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:dio/dio.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:pretty_dio_logger/pretty_dio_logger.dart';
-import '../../data/datasources/local/database_helper.dart';
-import '../../data/datasources/local/preferences_helper.dart';
-import '../../data/datasources/remote/github_api_service.dart';
-import '../../data/repositories/github_repository_impl.dart';
-import '../../domain/entities/repository_entity.dart';
-import '../../domain/repositories/github_repository.dart';
-
-// Dio Provider
-final dioProvider = Provider<Dio>((ref) {
-  final dio = Dio();
-  dio.interceptors.add(PrettyDioLogger(
-    requestHeader: true,
-    requestBody: true,
-    responseBody: true,
-    responseHeader: false,
-    error: true,
-    compact: true,
-  ));
-  return dio;
-});
-
-// SharedPreferences Provider
-final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
-  throw UnimplementedError();
-});
-
-// Repository Provider
-final githubRepositoryProvider = Provider<GithubRepository>((ref) {
-  final dio = ref.watch(dioProvider);
-  final prefs = ref.watch(sharedPreferencesProvider);
-  
-  return GithubRepositoryImpl(
-    apiService: GithubApiService(dio),
-    databaseHelper: DatabaseHelper.instance,
-    preferencesHelper: PreferencesHelper(prefs),
-  );
-});
-
-// Search State
-class SearchState {
-  final List<RepositoryEntity> repositories;
-  final bool isLoading;
-  final bool isLoadingMore;
-  final String? error;
-  final String currentQuery;
-  final int currentPage;
-  final String sortOption;
-  final List<String> searchHistory;
-  
-  SearchState({
-    this.repositories = const [],
-    this.isLoading = false,
-    this.isLoadingMore = false,
-    this.error,
-    this.currentQuery = '',
-    this.currentPage = 1,
-    this.sortOption = 'stars',
-    this.searchHistory = const [],
-  });
-  
-  SearchState copyWith({
-    List<RepositoryEntity>? repositories,
-    bool? isLoading,
-    bool? isLoadingMore,
-    String? error,
-    String? currentQuery,
-    int? currentPage,
-    String? sortOption,
-    List<String>? searchHistory,
-  }) {
-    return SearchState(
-      repositories: repositories ?? this.repositories,
-      isLoading: isLoading ?? this.isLoading,
-      isLoadingMore: isLoadingMore ?? this.isLoadingMore,
-      error: error,
-      currentQuery: currentQuery ?? this.currentQuery,
-      currentPage: currentPage ?? this.currentPage,
-      sortOption: sortOption ?? this.sortOption,
-      searchHistory: searchHistory ?? this.searchHistory,
-    );
-  }
-}
-
-// Search Notifier
-class SearchNotifier extends StateNotifier<SearchState> {
-  final GithubRepository _repository;
-  
-  SearchNotifier(this._repository) : super(SearchState()) {
-    _init();
-  }
-  
-  Future<void> _init() async {
-    final history = await _repository.getSearchHistory();
-    final sortOption = await _repository.getSortOption();
-    state = state.copyWith(
-      searchHistory: history,
-      sortOption: sortOption,
-    );
-  }
-  
-  Future<void> search(String query) async {
-    if (query.isEmpty) return;
-    
-    state = state.copyWith(
-      isLoading: true,
-      error: null,
-      currentQuery: query,
-      currentPage: 1,
-      repositories: [],
-    );
-    
-    try {
-      final results = await _repository.searchRepositories(
-        query: query,
-        page: 1,
-        sort: state.sortOption,
-      );
-      
-      await _repository.addToSearchHistory(query);
-      final history = await _repository.getSearchHistory();
-      
-      state = state.copyWith(
-        repositories: results,
-        isLoading: false,
-        searchHistory: history,
-      );
-    } catch (e) {
-      state = state.copyWith(
-        isLoading: false,
-        error: e.toString(),
-      );
-    }
-  }
-  
-  Future<void> loadMore() async {
-    if (state.isLoadingMore || state.currentQuery.isEmpty) return;
-    
-    state = state.copyWith(isLoadingMore: true);
-    
-    try {
-      final nextPage = state.currentPage + 1;
-      final results = await _repository.searchRepositories(
-        query: state.currentQuery,
-        page: nextPage,
-        sort: state.sortOption,
-      );
-      
-      state = state.copyWith(
-        repositories: [...state.repositories, ...results],
-        isLoadingMore: false,
-        currentPage: nextPage,
-      );
-    } catch (e) {
-      state = state.copyWith(
-        isLoadingMore: false,
-        error: e.toString(),
-      );
-    }
-  }
-  
-  Future<void> refresh() async {
-    if (state.currentQuery.isEmpty) return;
-    await search(state.currentQuery);
-  }
-  
-  Future<void> setSortOption(String option) async {
-    await _repository.setSortOption(option);
-    state = state.copyWith(sortOption: option);
-    if (state.currentQuery.isNotEmpty) {
-      await search(state.currentQuery);
-    }
-  }
-}
-
-// Search Provider
-final searchNotifierProvider =
-    StateNotifierProvider<SearchNotifier, SearchState>((ref) {
-  return SearchNotifier(ref.watch(githubRepositoryProvider));
-});
-
-// Favorites Provider
-final favoritesProvider = FutureProvider<List<RepositoryEntity>>((ref) async {
-  final repository = ref.watch(githubRepositoryProvider);
-  return await repository.getFavorites();
-});
-```
-
-## 11. メイン機能の統合
-
-### `lib/injection_container.dart`
-
-```dart
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'presentation/providers/github_providers.dart';
-
-Future<void> initializeDependencies() async {
-  final sharedPreferences = await SharedPreferences.getInstance();
-  
-  // Override the provider with the actual instance
-  final container = ProviderContainer(
-    overrides: [
-      sharedPreferencesProvider.overrideWithValue(sharedPreferences),
-    ],
-  );
-}
-```
-
-### `lib/main.dart`
-
-```dart
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'injection_container.dart';
-import 'presentation/routes/app_router.dart';
-import 'presentation/providers/github_providers.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize SharedPreferences
-  final sharedPreferences = await SharedPreferences.getInstance();
-  
-  runApp(
-    ProviderScope(
-      overrides: [
-        sharedPreferencesProvider.overrideWithValue(sharedPreferences),
-      ],
-      child: MyApp(),
-    ),
-  );
-}
-
-class MyApp extends StatelessWidget {
-  MyApp({Key? key}) : super(key: key);
-  
-  final _appRouter = AppRouter();
-  
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp.router(
-      title: 'GitHub Repository Search',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
-      ),
-      routerConfig: _appRouter.config(),
-    );
-  }
-}
-```
-
-## 実行手順
-
-1. **コード生成の実行**
-```bash
-flutter pub run build_runner build --delete-conflicting-outputs
-```
-
-2. **アプリの起動**
-```bash
-flutter run
-```
-
-## 追加の考慮事項
-
-### エラーハンドリング
-- ネットワークエラーの適切な処理
-- APIレート制限の考慮
-- オフライン時の動作
-
-### パフォーマンス最適化
-- 画像のキャッシュ
-- ページネーションの実装
-- 検索のデバウンス処理
-
-### セキュリティ
-- APIトークンの安全な管理（必要な場合）
-- HTTPSの使用
-
-### テスト
-- ユニットテスト
-- ウィジェットテスト
-- 統合テスト
-
-このチュートリアルに従うことで、指定された要件を満たすGitHub Repository Searchアプリケーションを構築できます。
+                    child: const Text('履歴をクリア'),
